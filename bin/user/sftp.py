@@ -17,47 +17,28 @@ implemented by davies-barnard.
 
 import os
 import time
-
-try:
-    from six.moves import cPickle
-except ImportError:
-    import cPickle
-
+import paramiko
 import weewx
 import weewx.reportengine
 from weeutil.weeutil import to_bool
+import logging
 
-try:
-    import weeutil.logger
-    import logging
-    log = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
-    def logdbg(msg, label=None):
-        if label is None:
-            label = 'sftp'
-        log.debug("%s: %s" % (label, msg))
-    def loginf(msg, label=None):
-        if label is None:
-            label = 'sftp'
-        log.info("%s: %s" % (label, msg))
-    def logerr(msg, label=None):
-        if label is None:
-            label = 'sftp'
-        log.error("%s: %s" % (label, msg))
-except ImportError:
-    import syslog
+def logdbg(msg, label=None):
+    if label is None:
+        label = 'sftp'
+    log.debug(f"{label}: {msg}")
 
-    def logmsg(level, msg, label):
-        if label is None:
-            label = 'sftp'
-        syslog.syslog(level, '%s: %s' % (label, msg))
-    def logdbg(msg, label=None):
-        logmsg(syslog.LOG_DEBUG, msg, label)
-    def loginf(msg, label=None):
-        logmsg(syslog.LOG_INFO, msg, label)
-    def logerr(msg, label=None):
-        logmsg(syslog.LOG_ERR, msg, label)
+def loginf(msg, label=None):
+    if label is None:
+        label = 'sftp'
+    log.info(f"{label}: {msg}")
 
+def logerr(msg, label=None):
+    if label is None:
+        label = 'sftp'
+    log.error(f"{label}: {msg}")
 
 VERSION = "0.7"
 
@@ -67,7 +48,6 @@ class SFTPUploader(object):
     def __init__(self, server, user, password, local_root, remote_root,
                  private_key=None, private_key_pass=None,
                  port=22, name='SFTP', max_tries=3, debug=0):
-        import pysftp
         self.server = server
         self.user = user
         self.password = password
@@ -79,85 +59,82 @@ class SFTPUploader(object):
         self.name = name
         self.max_tries = max_tries
         self.debug = debug
-        logdbg("local_root=%s" % self.local_root)
-        logdbg("remote_root=%s" % self.remote_root)
-        logdbg("server=%s port=%s user=%s" % (server, port, user))
+                     
+        logdbg(f"local_root={self.local_root}")
+        logdbg(f"remote_root={self.remote_root}")
+        logdbg(f"server={server} port={port} user={user}")
 
     def run(self):
-        import pysftp
         n_uploaded = 0
         (timestamp, fileset) = self.get_last_upload()
-        con = None
+        transport = None
+        sftp = None
         try:
-            logdbg("connecting to %s@%s" % (self.user, self.server))
-            cnopts = pysftp.CnOpts()
-            cnopts.hostkeys = None
-            for cnt in range(self.max_tries):
-                try:
-                    con = pysftp.Connection(host=self.server,
-                                            username=self.user,
-                                            password=self.password,
-                                            port=self.port,
-                                            private_key=self.private_key,
-                                            private_key_pass=self.private_key_pass,
-                                            cnopts=cnopts)
-                    break
-                except pysftp.ConnectionException as e:
-                    logerr("connect %s of %s failed: %s" %
-                           (cnt + 1, self.max_tries, e))
+            logdbg(f"connecting to {self.user}@{self.server}")
+            transport = paramiko.Transport((self.server, self.port))
+            if self.private_key:
+                pkey = paramiko.RSAKey.from_private_key_file(self.private_key, password=self.private_key_pass)
+                transport.connect(username=self.user, pkey=pkey)
             else:
-                logerr("failed %s attempts for %s@%s" %
-                       (self.max_tries, self.user, self.server))
-                return n_uploaded
+                transport.connect(username=self.user, password=self.password)
 
-            for (dirpath, unused_dirs, filenames) in os.walk(self.local_root):
+            sftp = paramiko.SFTPClient.from_transport(transport)
+
+            for dirpath, unused_dirs, filenames in os.walk(self.local_root):
                 # strip out the common local root directory
-                local_rel_dir_path = dirpath.replace(self.local_root, '.')
+                local_rel_dir_path = os.path.relpath(dirpath, self.local_root)
                 if self._skip_dir(local_rel_dir_path):
                     continue
+                    
                 # this is the absolute path to the remote directory
-                remote_dir_path = os.path.normpath(
-                    os.path.join(self.remote_root, local_rel_dir_path))
+                remote_dir_path = os.path.normpath(os.path.join(self.remote_root, local_rel_dir_path))
+
                 # create the remote directory
-                self._make_remote_dir(con, remote_dir_path)
+                self._make_remote_dir(sftp, remote_dir_path)
+
                 # iterate over all members of the local directory
                 for filename in filenames:
                     full_local_path = os.path.join(dirpath, filename)
                     # see if this file can be skipped
                     if self._skip_file(timestamp, fileset, full_local_path):
                         continue
+                        
                     full_remote_path = os.path.join(remote_dir_path, filename)
+                    
                     for cnt in range(self.max_tries):
                         try:
-                            con.put(full_local_path, full_remote_path)
+                            sftp.put(full_local_path, full_remote_path)
                         except (OSError, IOError) as e:
-                            loginf("attempt %s of %s failed: %s" %
-                                   (cnt + 1, self.max_tries, e))
+                            loginf(f"attempt {cnt + 1} of {self.max_tries} failed: {e}")
                         else:
                             n_uploaded += 1
                             fileset.add(full_local_path)
-                            logdbg("uploaded file %s" % full_remote_path)
+                            logdbg(f"uploaded file {full_remote_path}")
                             break
                     else:
-                        logerr("failed to upload file %s" % full_remote_path)
+                        logerr(f"failed to upload file {full_remote_path}")
+                        
+        except Exception as e:
+            logerr(f"Connection or upload failed: {e}")
         finally:
-            if con is not None:
-                try:
-                    con.quit()
-                except Exception:
-                    pass
+            if sftp:
+                sftp.close()
+            if transport:
+                transport.close()
+                
         timestamp = time.time()
         self.save_last_upload(timestamp, fileset)
         return n_uploaded
 
     def get_last_upload(self):
         """read the time and members of the last upload from local root"""
-        tsfile = os.path.join(self.local_root, "#%s.last" % self.name)
+        import pickle
+        tsfile = os.path.join(self.local_root, f"#{self.name}.last")
         try:
             with open(tsfile, "rb") as f:
-                timestamp = cPickle.load(f)
-                fileset = cPickle.load(f)
-        except (IOError, EOFError, cPickle.PickleError):
+                timestamp = pickle.load(f)
+                fileset = pickle.load(f)
+        except (IOError, EOFError, pickle.PickleError):
             timestamp = 0
             fileset = set()
             try:
@@ -168,26 +145,30 @@ class SFTPUploader(object):
 
     def save_last_upload(self, timestamp, fileset):
         """save the time and members of the last upload in the local root"""
-        tsfile = os.path.join(self.local_root, "#%s.last" % self.name)
+        import pickle
+        tsfile = os.path.join(self.local_root, f"#{self.name}.last")
         try:
             with open(tsfile, "wb") as f:
-                cPickle.dump(timestamp, f)
-                cPickle.dump(fileset, f)
+                pickle.dump(timestamp, f)
+                pickle.dump(fileset, f)
         except IOError as e:
-            loginf("failed to save upload time: %s" % e)
+            loginf(f"failed to save upload time: {e}")
 
-    def _make_remote_dir(self, con, remote_dir_path):
+    def _make_remote_dir(self, sftp, remote_dir_path):
         """create remote directory using the server connection"""
-        logdbg("create remote directory %s" % remote_dir_path)
-        for _ in range(self.max_tries):
+        logdbg(f"create remote directory {remote_dir_path}")
+        parts = remote_dir_path.strip('/').split('/')
+        path = ''
+        for part in parts:
+            path += '/' + part
             try:
-                if not con.isdir(remote_dir_path):
-                    con.mkdir(remote_dir_path)
-                break
-            except OSError as e:
-                logdbg("create remote directory failed: %s" % e)
-        else:
-            logdbg("create remote directory failed")
+                sftp.stat(path)
+            except IOError:
+                try:
+                    sftp.mkdir(path)
+                    logdbg(f"created remote directory {path}")
+                except Exception as e:
+                    logdbg(f"failed to create directory {path}: {e}")
 
     def _skip_dir(self, local_dir):
         for x in ['.svn', 'CVS', '.git']:
@@ -200,22 +181,19 @@ class SFTPUploader(object):
         filename = os.path.basename(full_local_path)
 
         # ignore temporary files
-        if (filename[0] == '#' or
-            filename.startswith('.#') or
-            filename[-1] == '~'):
+        if (filename.startswith('#') or filename.startswith('.#') or filename.endswith('~')):
             return True
-
+            
         # does the file appear in the fileset?
-        flag = True
         if full_local_path not in fileset:
-            flag = False
+            return False
 
         # has the file been updated/changed since last upload?
         ftime = os.stat(full_local_path).st_mtime
         if ftime > timestamp:
-            flag = False
+            return True
 
-        return flag
+        return True
 
 
 class SFTPGenerator(weewx.reportengine.ReportGenerator):
@@ -232,7 +210,7 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
                 self.config_dict['WEEWX_ROOT'],
                 self.config_dict.get('StdReport', {}).get('HTML_ROOT', 'public_html'))
 
-        logdbg("running SFTPGenerator %s" % VERSION)
+        logdbg(f"running SFTPGenerator {VERSION}")
 
         try:
             uploader = SFTPUploader(
@@ -246,25 +224,24 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
                 port=int(self.skin_dict.get('port', 22)),
                 name=self.skin_dict.get('REPORT_NAME', 'SFTP'),
                 max_tries=int(self.skin_dict.get('max_tries', 3)),
-                debug=int(self.skin_dict.get('debug', 0)))
+                debug=int(self.skin_dict.get('debug', 0))
+            )
         except KeyError as e:
-            loginf("upload not possible: missing parameter %s" % e,
-                   "sftpgenerator")
+            loginf(f"upload not possible: missing parameter {e}", "sftpgenerator")
             return
         except ImportError as e:
-            loginf("upload not possible: %s" % e, "sftpgenerator")
+            loginf(f"upload not possible: {e}", "sftpgenerator")
             return
 
         try:
             n = uploader.run()
-        except () as e:
-            logerr("%s" % e, "sftpgenerator")
+        except Exception as e:
+            logerr(f"{e}", "sftpgenerator")
             return
 
         t2 = time.time()
         if log_success:
-            loginf("transferred %d files in %0.2f seconds" % (n, (t2 - t1)),
-                   "sftpgenerator")
+            loginf(f"transferred {n} files in {t2 - t1:.2f} seconds", "sftpgenerator")
 
 
 # entry point for testing this code
@@ -300,8 +277,8 @@ if __name__ == '__main__':
         'WEEWX_ROOT': cfg.get('WEEWX_ROOT', '/home/weewx'),
         'StdReport': {
             'HTML_ROOT': stdrep.get('HTML_ROOT', '/var/www/html')
-            }
         }
+    }
     skin_dict = {
         'server': skin.get('server', 'localhost'),
         'port': skin.get('port', 22),
@@ -311,10 +288,9 @@ if __name__ == '__main__':
         'debug': skin.get('debug', debug),
         }
 
-    print("connect to %s:%s" % (skin_dict['server'], skin_dict['port']))
-    print("destination: %s" % skin_dict['path'])
-    print("username: %s" % skin_dict['user'])
+    print(f"connect to {skin_dict['server']}:{skin_dict['port']}")
+    print(f"destination: {skin_dict['path']}")
+    print(f"username: {skin_dict['user']}")
     socket.setdefaulttimeout(10)
-    gen = SFTPGenerator(
-        config_dict, skin_dict, gen_ts=None, first_run=None, stn_info=None)
+    gen = SFTPGenerator(config_dict, skin_dict, gen_ts=None, first_run=None, stn_info=None)
     gen.run()
