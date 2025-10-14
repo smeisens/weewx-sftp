@@ -15,6 +15,8 @@ Based on the FTP generator in weewx, with help from the SFTP generator
 implemented by davies-barnard.
 """
 
+# sftp.py - WeeWX SFTP Generator mit Paramiko (anstelle pysftp)
+
 import os
 import time
 import paramiko
@@ -40,6 +42,7 @@ def logerr(msg, label=None):
         label = 'sftp'
     log.error(f"{label}: {msg}")
 
+
 VERSION = "0.7"
 
 
@@ -59,7 +62,7 @@ class SFTPUploader(object):
         self.name = name
         self.max_tries = max_tries
         self.debug = debug
-                     
+
         logdbg(f"local_root={self.local_root}")
         logdbg(f"remote_root={self.remote_root}")
         logdbg(f"server={server} port={port} user={user}")
@@ -71,6 +74,8 @@ class SFTPUploader(object):
         sftp = None
         try:
             logdbg(f"connecting to {self.user}@{self.server}")
+
+            # Transport aufbauen
             transport = paramiko.Transport((self.server, self.port))
             if self.private_key:
                 pkey = paramiko.RSAKey.from_private_key_file(self.private_key, password=self.private_key_pass)
@@ -81,26 +86,26 @@ class SFTPUploader(object):
             sftp = paramiko.SFTPClient.from_transport(transport)
 
             for dirpath, unused_dirs, filenames in os.walk(self.local_root):
-                # strip out the common local root directory
+                # relativen Pfad vom lokalen Wurzelverzeichnis bilden
                 local_rel_dir_path = os.path.relpath(dirpath, self.local_root)
                 if self._skip_dir(local_rel_dir_path):
                     continue
-                    
-                # this is the absolute path to the remote directory
+
+                # Remote-Pfad zusammenbauen
                 remote_dir_path = os.path.normpath(os.path.join(self.remote_root, local_rel_dir_path))
 
-                # create the remote directory
+                # Remote Verzeichnis erstellen, falls nicht vorhanden
                 self._make_remote_dir(sftp, remote_dir_path)
 
-                # iterate over all members of the local directory
+                # Dateien hochladen
                 for filename in filenames:
                     full_local_path = os.path.join(dirpath, filename)
-                    # see if this file can be skipped
+
                     if self._skip_file(timestamp, fileset, full_local_path):
                         continue
-                        
+
                     full_remote_path = os.path.join(remote_dir_path, filename)
-                    
+
                     for cnt in range(self.max_tries):
                         try:
                             sftp.put(full_local_path, full_remote_path)
@@ -113,7 +118,7 @@ class SFTPUploader(object):
                             break
                     else:
                         logerr(f"failed to upload file {full_remote_path}")
-                        
+
         except Exception as e:
             logerr(f"Connection or upload failed: {e}")
         finally:
@@ -121,13 +126,12 @@ class SFTPUploader(object):
                 sftp.close()
             if transport:
                 transport.close()
-                
+
         timestamp = time.time()
         self.save_last_upload(timestamp, fileset)
         return n_uploaded
 
     def get_last_upload(self):
-        """read the time and members of the last upload from local root"""
         import pickle
         tsfile = os.path.join(self.local_root, f"#{self.name}.last")
         try:
@@ -144,7 +148,6 @@ class SFTPUploader(object):
         return (timestamp, fileset)
 
     def save_last_upload(self, timestamp, fileset):
-        """save the time and members of the last upload in the local root"""
         import pickle
         tsfile = os.path.join(self.local_root, f"#{self.name}.last")
         try:
@@ -155,7 +158,6 @@ class SFTPUploader(object):
             loginf(f"failed to save upload time: {e}")
 
     def _make_remote_dir(self, sftp, remote_dir_path):
-        """create remote directory using the server connection"""
         logdbg(f"create remote directory {remote_dir_path}")
         parts = remote_dir_path.strip('/').split('/')
         path = ''
@@ -177,21 +179,16 @@ class SFTPUploader(object):
         return False
 
     def _skip_file(self, timestamp, fileset, full_local_path):
-        # resolve the local file
         filename = os.path.basename(full_local_path)
-
-        # ignore temporary files
         if (filename.startswith('#') or filename.startswith('.#') or filename.endswith('~')):
             return True
-            
-        # does the file appear in the fileset?
+
         if full_local_path not in fileset:
             return False
 
-        # has the file been updated/changed since last upload?
         ftime = os.stat(full_local_path).st_mtime
         if ftime > timestamp:
-            return True
+            return False
 
         return True
 
@@ -201,6 +198,7 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
     def run(self):
         log_success = to_bool(self.skin_dict.get('log_success', True))
         t1 = time.time()
+
         if 'HTML_ROOT' in self.skin_dict:
             local_root = os.path.join(
                 self.config_dict['WEEWX_ROOT'],
@@ -244,12 +242,12 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
             loginf(f"transferred {n} files in {t2 - t1:.2f} seconds", "sftpgenerator")
 
 
-# entry point for testing this code
-# PYTHONPATH=bin python bin/user/sftp.py weewx.conf
+# entry point for testing this code (optional)
 if __name__ == '__main__':
     import configobj
     import optparse
     import socket
+
     parser = optparse.OptionParser()
     parser.add_option("--config", dest="config_path", metavar="CONFIG_FILE",
                       default="/home/weewx/weewx.conf",
@@ -286,7 +284,7 @@ if __name__ == '__main__':
         'password': skin.get('password', 'password'),
         'path': skin.get('path', '/pub'),
         'debug': skin.get('debug', debug),
-        }
+    }
 
     print(f"connect to {skin_dict['server']}:{skin_dict['port']}")
     print(f"destination: {skin_dict['path']}")
