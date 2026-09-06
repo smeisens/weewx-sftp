@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/weewx-sftp-logo.png" alt="weewx-sftp" width="360">
+</p>
+
 # weewx-sftp
 
 [![CI](https://github.com/ziti/weewx-sftp/actions/workflows/ci.yml/badge.svg)](https://github.com/ziti/weewx-sftp/actions/workflows/ci.yml)
