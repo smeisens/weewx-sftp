@@ -1,5 +1,9 @@
 # weewx-sftp
 
+[![CI](https://github.com/ziti/weewx-sftp/actions/workflows/ci.yml/badge.svg)](https://github.com/ziti/weewx-sftp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ziti/weewx-sftp?sort=semver)](https://github.com/ziti/weewx-sftp/releases)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 > A community-maintained fork of [matthewwall/weewx-sftp](https://github.com/matthewwall/weewx-sftp) (unmaintained). Copyright 2016-2026 Matthew Wall and contributors. Distributed under the terms of the GPLv3.
 
 Report generator for WeeWX that uploads a local directory tree to a remote host
