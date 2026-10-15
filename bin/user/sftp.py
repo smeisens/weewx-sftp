@@ -16,9 +16,13 @@ implemented by davies-barnard.
 """
 
 import logging
+import math
 import os
 import pickle
+import posixpath
 import stat
+import tempfile
+import threading
 import time
 
 import weewx
@@ -40,14 +44,16 @@ def logerr(msg, label='sftp'):
     log.error("%s: %s" % (label, msg))
 
 
-VERSION = "0.8"
+VERSION = "0.9.0"
 
 
 class SFTPUploader(object):
 
     def __init__(self, server, user, password, local_root, remote_root,
                  private_key=None, private_key_pass=None,
-                 port=22, name='SFTP', max_tries=3, debug=0):
+                 port=22, name='SFTP', max_tries=3, debug=0,
+                 timeout=30, known_hosts=None, allow_agent=True,
+                 look_for_keys=True, log_progress=False):
         import paramiko  # noqa: F401  -- fail fast if the dependency is missing
         self.server = server
         self.user = user
@@ -55,10 +61,17 @@ class SFTPUploader(object):
         self.private_key = private_key
         self.private_key_pass = private_key_pass
         self.local_root = os.path.normpath(local_root)
-        self.remote_root = os.path.normpath(remote_root)
+        self.remote_root = posixpath.normpath(remote_root)
         self.port = port
         self.name = name
-        self.max_tries = max_tries
+        self.max_tries = int(max_tries)
+        self.timeout = float(timeout)
+        if self.max_tries < 1 or not math.isfinite(self.timeout) or self.timeout <= 0:
+            raise ValueError("max_tries and timeout must be positive (timeout must be finite)")
+        self.known_hosts = known_hosts
+        self.allow_agent = to_bool(allow_agent)
+        self.look_for_keys = to_bool(look_for_keys)
+        self.log_progress = to_bool(log_progress)
         self.debug = debug
         logdbg("local_root=%s" % self.local_root)
         logdbg("remote_root=%s" % self.remote_root)
@@ -66,25 +79,36 @@ class SFTPUploader(object):
 
     def run(self):
         import paramiko
+        if not os.path.isdir(self.local_root):
+            raise OSError("local report directory does not exist: %s" % self.local_root)
+        started = time.time()
         n_uploaded = 0
         (timestamp, fileset) = self.get_last_upload()
         client = None
         con = None
         try:
-            logdbg("connecting to %s@%s" % (self.user, self.server))
+            loginf("starting upload from %s to %s:%s" %
+                   (self.local_root, self.server, self.remote_root), self.name)
             for cnt in range(self.max_tries):
                 try:
                     client = paramiko.SSHClient()
-                    client.load_system_host_keys()
-
-                    # Preserve the original extension's behavior. The pysftp
-                    # implementation explicitly disabled host-key checking.
-                    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    if self.known_hosts:
+                        client.load_host_keys(os.path.expanduser(self.known_hosts))
+                        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+                    else:
+                        # Retain legacy behavior unless verification is configured.
+                        client.load_system_host_keys()
+                        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
                     connect_args = {
                         'hostname': self.server,
                         'username': self.user,
                         'port': self.port,
+                        'timeout': self.timeout,
+                        'banner_timeout': self.timeout,
+                        'auth_timeout': self.timeout,
+                        'allow_agent': self.allow_agent,
+                        'look_for_keys': self.look_for_keys,
                     }
                     if self.password is not None:
                         connect_args['password'] = self.password
@@ -94,7 +118,9 @@ class SFTPUploader(object):
                         connect_args['passphrase'] = self.private_key_pass
 
                     client.connect(**connect_args)
-                    con = client.open_sftp()
+                    loginf("authenticated; opening SFTP session", self.name)
+                    con = self._open_sftp(client)
+                    loginf("SFTP session opened", self.name)
                     break
                 except (paramiko.SSHException, OSError) as e:
                     logerr("connect %s of %s failed: %s" %
@@ -114,16 +140,20 @@ class SFTPUploader(object):
             else:
                 logerr("failed %s attempts for %s@%s" %
                        (self.max_tries, self.user, self.server))
-                return n_uploaded
+                raise OSError("SFTP connection retries exhausted")
 
-            for dirpath, _dirs, filenames in os.walk(self.local_root):
+            def walk_error(error):
+                raise error
+
+            for dirpath, dirs, filenames in os.walk(self.local_root, onerror=walk_error):
+                dirs[:] = [d for d in dirs if not self._skip_dir(d)]
                 # strip out the common local root directory
-                local_rel_dir_path = dirpath.replace(self.local_root, '.')
+                local_rel_dir_path = os.path.relpath(dirpath, self.local_root)
                 if self._skip_dir(local_rel_dir_path):
                     continue
                 # this is the absolute path to the remote directory
-                remote_dir_path = os.path.normpath(
-                    os.path.join(self.remote_root, local_rel_dir_path))
+                remote_dir_path = posixpath.normpath(posixpath.join(
+                    self.remote_root, *local_rel_dir_path.split(os.sep)))
                 # create the remote directory
                 self._make_remote_dir(con, remote_dir_path)
                 # iterate over all members of the local directory
@@ -132,7 +162,11 @@ class SFTPUploader(object):
                     # see if this file can be skipped
                     if self._skip_file(timestamp, fileset, full_local_path):
                         continue
-                    full_remote_path = os.path.join(remote_dir_path, filename)
+                    if not stat.S_ISREG(os.stat(full_local_path).st_mode):
+                        raise OSError("refusing to upload non-regular file: %s" % full_local_path)
+                    full_remote_path = posixpath.join(remote_dir_path, filename)
+                    if self.log_progress:
+                        loginf("uploading %s" % full_remote_path, self.name)
                     for cnt in range(self.max_tries):
                         try:
                             con.put(full_local_path, full_remote_path)
@@ -142,10 +176,14 @@ class SFTPUploader(object):
                         else:
                             n_uploaded += 1
                             fileset.add(full_local_path)
-                            logdbg("uploaded file %s" % full_remote_path)
+                            if self.log_progress:
+                                loginf("uploaded %s" % full_remote_path, self.name)
+                            else:
+                                logdbg("uploaded file %s" % full_remote_path)
                             break
                     else:
                         logerr("failed to upload file %s" % full_remote_path)
+                        raise OSError("failed to upload file %s" % full_remote_path)
         finally:
             if con is not None:
                 try:
@@ -157,9 +195,44 @@ class SFTPUploader(object):
                     client.close()
                 except Exception:
                     pass
-        timestamp = time.time()
-        self.save_last_upload(timestamp, fileset)
+        # Use the start time so a file modified during upload is retried next run.
+        self.save_last_upload(started, fileset)
         return n_uploaded
+
+    def _open_sftp(self, client):
+        """Bound channel/subsystem negotiation as well as later SFTP I/O.
+
+        Setting a channel timeout only *after* open_sftp returns does not cover
+        a server that accepts SSH authentication but never answers SFTP INIT.
+        Closing the client releases Paramiko's negotiation waits.
+        """
+        expired = threading.Event()
+
+        def abort():
+            expired.set()
+            client.close()
+
+        guard = threading.Timer(self.timeout, abort)
+        guard.daemon = True
+        guard.start()
+        con = None
+        try:
+            con = client.open_sftp()
+            if expired.is_set():
+                raise TimeoutError("SFTP session negotiation timed out")
+            con.get_channel().settimeout(self.timeout)
+            return con
+        except Exception as error:
+            if con is not None:
+                con.close()
+            if expired.is_set():
+                raise TimeoutError("SFTP session negotiation timed out") from error
+            raise
+        finally:
+            guard.cancel()
+
+    def _target(self):
+        return (self.server, int(self.port), self.user, self.remote_root)
 
     def get_last_upload(self):
         """read the time and members of the last upload from local root"""
@@ -168,6 +241,14 @@ class SFTPUploader(object):
             with open(tsfile, "rb") as f:
                 timestamp = pickle.load(f)
                 fileset = pickle.load(f)
+                try:
+                    target = pickle.load(f)
+                except EOFError:
+                    target = None
+            if target != self._target():
+                loginf("upload destination changed or cache is legacy; uploading all files",
+                       self.name)
+                return (0, set())
         except (OSError, EOFError, pickle.PickleError):
             timestamp = 0
             fileset = set()
@@ -180,12 +261,18 @@ class SFTPUploader(object):
     def save_last_upload(self, timestamp, fileset):
         """save the time and members of the last upload in the local root"""
         tsfile = os.path.join(self.local_root, "#%s.last" % self.name)
+        fd, staged = tempfile.mkstemp(prefix=".#sftp-", dir=self.local_root)
         try:
-            with open(tsfile, "wb") as f:
+            with os.fdopen(fd, "wb") as f:
                 pickle.dump(timestamp, f)
                 pickle.dump(fileset, f)
-        except OSError as e:
-            loginf("failed to save upload time: %s" % e)
+                pickle.dump(self._target(), f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(staged, tsfile)
+        finally:
+            if os.path.exists(staged):
+                os.unlink(staged)
 
     def _remote_isdir(self, con, remote_dir_path):
         """return True if remote_dir_path exists and is a directory"""
@@ -200,18 +287,18 @@ class SFTPUploader(object):
         for _ in range(self.max_tries):
             try:
                 if not self._remote_isdir(con, remote_dir_path):
+                    parent = posixpath.dirname(remote_dir_path)
+                    if parent and parent != remote_dir_path and not self._remote_isdir(con, parent):
+                        self._make_remote_dir(con, parent)
                     con.mkdir(remote_dir_path)
                 break
             except OSError as e:
                 logdbg("create remote directory failed: %s" % e)
         else:
-            logdbg("create remote directory failed")
+            raise OSError("failed to create remote directory %s" % remote_dir_path)
 
     def _skip_dir(self, local_dir):
-        for x in ['.svn', 'CVS', '.git']:
-            if x in local_dir:
-                return True
-        return False
+        return any(x in os.path.normpath(local_dir).split(os.sep) for x in ('.svn', 'CVS', '.git'))
 
     def _skip_file(self, timestamp, fileset, full_local_path):
         # resolve the local file
@@ -239,6 +326,7 @@ class SFTPUploader(object):
 class SFTPGenerator(weewx.reportengine.ReportGenerator):
 
     def run(self):
+        self.success = False
         log_success = to_bool(self.skin_dict.get('log_success', True))
         t1 = time.time()
         if 'HTML_ROOT' in self.skin_dict:
@@ -264,7 +352,12 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
                 port=int(self.skin_dict.get('port', 22)),
                 name=self.skin_dict.get('REPORT_NAME', 'SFTP'),
                 max_tries=int(self.skin_dict.get('max_tries', 3)),
-                debug=int(self.skin_dict.get('debug', 0)))
+                debug=int(self.skin_dict.get('debug', 0)),
+                timeout=self.skin_dict.get('timeout', 30),
+                known_hosts=self.skin_dict.get('known_hosts'),
+                allow_agent=self.skin_dict.get('allow_agent', True),
+                look_for_keys=self.skin_dict.get('look_for_keys', True),
+                log_progress=self.skin_dict.get('log_progress', False))
         except KeyError as e:
             loginf("upload not possible: missing parameter %s" % e,
                    "sftpgenerator")
@@ -272,68 +365,53 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
         except ImportError as e:
             loginf("upload not possible: %s" % e, "sftpgenerator")
             return
+        except (TypeError, ValueError) as e:
+            logerr("invalid configuration: %s" % e, self.skin_dict.get('REPORT_NAME', 'SFTP'))
+            return
 
         try:
             n = uploader.run()
         except Exception as e:
-            logerr("%s" % e, "sftpgenerator")
+            logerr("upload failed: %s" % e, self.skin_dict.get('REPORT_NAME', 'SFTP'))
             return
 
         t2 = time.time()
+        self.success = True
         if log_success:
             loginf("transferred %d files in %0.2f seconds" % (n, (t2 - t1)),
                    "sftpgenerator")
 
 
-# entry point for testing this code
-# PYTHONPATH=bin python bin/user/sftp.py weewx.conf
-if __name__ == '__main__':
+def main():
+    """Run the same effective report configuration used by the WeeWX engine."""
     import optparse
-    import socket
 
-    import configobj
+    import weecfg
+
     parser = optparse.OptionParser()
     parser.add_option("--config", dest="config_path", metavar="CONFIG_FILE",
-                      default="/home/weewx/weewx.conf",
                       help="Use configuration file CONFIG_FILE")
     parser.add_option("--report", default="SFTP",
                       help="Use the specified report from StdReport")
-    parser.add_option("--debug", action="store_true",
-                      help="Enable verbose logging")
-    (options, args) = parser.parse_args()
-
-    debug = 0
-    if options.debug:
-        weewx.debug = 1
-        debug = 1
-
-    cfg = dict()
+    parser.add_option("--debug", action="store_true", help="Enable verbose logging")
+    options, args = parser.parse_args()
+    logging.basicConfig(level=logging.DEBUG if options.debug else logging.INFO,
+                        format="%(levelname)s %(name)s: %(message)s")
     try:
-        cfg = configobj.ConfigObj(options.config_path)
-    except OSError:
-        pass
+        _, config = weecfg.read_config(options.config_path, args)
+        if options.report not in config.get('StdReport', {}):
+            raise ValueError("report not found: %s" % options.report)
+        skin = weewx.reportengine.build_skin_dict(config, options.report)
+        if options.debug:
+            skin['debug'] = 1
+            skin['log_progress'] = True
+        generator = SFTPGenerator(config, skin, None, None, None)
+        generator.run()
+        return 0 if generator.success else 1
+    except Exception as error:
+        logerr("command-line upload failed: %s" % error)
+        return 1
 
-    stdrep = cfg.get('StdReport', {})
-    skin = stdrep.get(options.report, {})
-    config_dict = {
-        'WEEWX_ROOT': cfg.get('WEEWX_ROOT', '/home/weewx'),
-        'StdReport': {
-            'HTML_ROOT': stdrep.get('HTML_ROOT', '/var/www/html')
-            }
-        }
-    skin_dict = {
-        'server': skin.get('server', 'localhost'),
-        'port': skin.get('port', 22),
-        'user': skin.get('user', 'username'),
-        'password': skin.get('password', 'password'),
-        'path': skin.get('path', '/pub'),
-        'debug': skin.get('debug', debug),
-        }
 
-    print("connect to %s:%s" % (skin_dict['server'], skin_dict['port']))
-    print("destination: %s" % skin_dict['path'])
-    print("username: %s" % skin_dict['user'])
-    socket.setdefaulttimeout(10)
-    gen = SFTPGenerator(
-        config_dict, skin_dict, gen_ts=None, first_run=None, stn_info=None)
-    gen.run()
+if __name__ == '__main__':
+    raise SystemExit(main())

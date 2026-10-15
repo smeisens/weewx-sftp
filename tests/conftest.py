@@ -95,8 +95,12 @@ def _install_fake_paramiko():
     class AutoAddPolicy:
         pass
 
+    class RejectPolicy:
+        pass
+
     mod.SSHException = SSHException
     mod.AutoAddPolicy = AutoAddPolicy
+    mod.RejectPolicy = RejectPolicy
     mod.SSHClient = None  # the paramiko_stub fixture supplies a working one
     sys.modules["paramiko"] = mod
 
@@ -115,8 +119,15 @@ class RecordingSFTP:
         self.mkdir_calls = []
         self.stat_calls = []
         self.closed = False
-        self.existing_dirs = set()
+        self.existing_dirs = {'/', '.'}
         self.put_errors = {}  # remote path -> exception to raise once
+        self.timeout = None
+
+    def get_channel(self):
+        return self
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
 
     def stat(self, path):
         self.stat_calls.append(path)
@@ -160,6 +171,11 @@ def paramiko_stub(monkeypatch):
 
         def load_system_host_keys(self):
             self.host_keys_loaded = True
+
+        def load_host_keys(self, path):
+            with open(path):
+                pass
+            self.known_hosts = path
 
         def set_missing_host_key_policy(self, policy):
             self.policy = policy

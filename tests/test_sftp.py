@@ -2,6 +2,7 @@
 
 import logging
 import os
+import pickle
 
 import pytest
 
@@ -158,7 +159,8 @@ def test_run_gives_up_after_max_tries(paramiko_stub, tmp_path, caplog):
     paramiko_stub._state["fail_first"] = 99
     up = make_uploader(local_root=str(tmp_path), max_tries=3)
     with caplog.at_level(logging.ERROR):
-        assert up.run() == 0
+        with pytest.raises(OSError, match="connection retries exhausted"):
+            up.run()
     assert len(paramiko_stub._state["clients"]) == 3
     assert "failed 3 attempts" in caplog.text
 
@@ -214,6 +216,12 @@ def test_run_put_failure_is_logged(paramiko_stub, tmp_path, caplog):
         def close(self):
             self.closed = True
 
+        def get_channel(self):
+            return self
+
+        def settimeout(self, timeout):
+            pass
+
     # swap the sftp object the fake client will hand back
     real_open = paramiko_stub.SSHClient.open_sftp
 
@@ -224,11 +232,12 @@ def test_run_put_failure_is_logged(paramiko_stub, tmp_path, caplog):
     paramiko_stub.SSHClient.open_sftp = open_sftp
     try:
         with caplog.at_level(logging.ERROR):
-            n = up.run()
+            with pytest.raises(OSError, match="failed to upload file"):
+                up.run()
     finally:
         paramiko_stub.SSHClient.open_sftp = real_open
 
-    assert n == 0
+    assert not (root / '#SFTP.last').exists()
     assert "failed to upload file" in caplog.text
 
 
@@ -308,9 +317,11 @@ def test_generator_swallows_uploader_exception(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr("user.sftp.SFTPUploader", BoomUploader)
     skin = {"server": "h", "user": "u", "password": "p", "path": "/pub"}
     gen = _generator(tmp_path, skin)
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.INFO):
         assert gen.run() is None  # must NOT propagate
     assert "network went away" in caplog.text
+    assert 'transferred ' not in caplog.text
+    assert gen.success is False
 
 
 def test_state_file_uses_report_name(tmp_path):
@@ -318,3 +329,124 @@ def test_state_file_uses_report_name(tmp_path):
     up.save_last_upload(1.0, {"a"})
     assert (tmp_path / "#SftpBelchertown.last").exists()
     assert up.get_last_upload() == (1.0, {"a"})
+
+
+@pytest.mark.parametrize('timeout', [0, -1, float('inf'), float('nan'), 'invalid'])
+def test_invalid_timeout_rejected(timeout):
+    with pytest.raises(ValueError):
+        make_uploader(timeout=timeout)
+
+
+def test_timeouts_and_optional_identity_controls(paramiko_stub, tmp_path):
+    up = make_uploader(local_root=str(tmp_path), timeout=7,
+                       allow_agent='false', look_for_keys='false')
+    up.run()
+    client = paramiko_stub._state['clients'][0]
+    args = client.connect_calls[0]
+    assert args['timeout'] == args['banner_timeout'] == args['auth_timeout'] == 7
+    assert args['allow_agent'] is False and args['look_for_keys'] is False
+    assert client.sftp.timeout == 7
+
+
+def test_optional_known_hosts_enables_verification(paramiko_stub, tmp_path):
+    known_hosts = tmp_path / 'known_hosts'
+    known_hosts.write_text('fixture')
+    up = make_uploader(local_root=str(tmp_path), known_hosts=str(known_hosts))
+    up.run()
+    client = paramiko_stub._state['clients'][0]
+    assert client.known_hosts == str(known_hosts)
+    assert isinstance(client.policy, paramiko_stub.RejectPolicy)
+    assert not client.host_keys_loaded  # An explicit trust file is authoritative.
+
+
+def test_failure_preserves_previous_cache(paramiko_stub, tmp_path, monkeypatch):
+    (tmp_path / 'index.html').write_text('new')
+    up = make_uploader(local_root=str(tmp_path), remote_root='/pub', max_tries=1)
+    up.save_last_upload(1, set())
+    cache = tmp_path / '#SFTP.last'
+    before = cache.read_bytes()
+    original = paramiko_stub.SSHClient.open_sftp
+
+    def failing_open(client):
+        sftp = original(client)
+        sftp.put_errors['/pub/index.html'] = OSError('disk full')
+        return sftp
+
+    monkeypatch.setattr(paramiko_stub.SSHClient, 'open_sftp', failing_open)
+    with pytest.raises(OSError, match='failed to upload file'):
+        up.run()
+    assert cache.read_bytes() == before
+
+
+def test_failed_directory_creation_raises(paramiko_stub, tmp_path, monkeypatch):
+    from conftest import RecordingSFTP
+
+    def denied(self, path):
+        raise PermissionError('denied')
+
+    monkeypatch.setattr(RecordingSFTP, 'mkdir', denied)
+    up = make_uploader(local_root=str(tmp_path), remote_root='/pub', max_tries=1)
+    with pytest.raises(OSError, match='failed to create remote directory'):
+        up.run()
+    assert not (tmp_path / '#SFTP.last').exists()
+
+
+def test_target_change_invalidates_cache(paramiko_stub, tmp_path):
+    path = tmp_path / 'index.html'
+    path.write_text('unchanged')
+    os.utime(path, (100, 100))
+    up = make_uploader(local_root=str(tmp_path), remote_root='/old')
+    up.save_last_upload(200, {str(path)})
+    up.remote_root = '/new'
+    assert up.run() == 1
+    assert paramiko_stub._state['clients'][0].sftp.put_calls == [(str(path), '/new/index.html')]
+
+
+def test_legacy_cache_is_retained_until_success_but_not_trusted(tmp_path):
+    cache = tmp_path / '#SFTP.last'
+    with cache.open('wb') as stream:
+        pickle.dump(123, stream)
+        pickle.dump({'index.html'}, stream)
+    before = cache.read_bytes()
+    assert make_uploader(local_root=str(tmp_path)).get_last_upload() == (0, set())
+    assert cache.read_bytes() == before
+
+
+def test_failed_atomic_save_retains_existing_cache(tmp_path, monkeypatch):
+    up = make_uploader(local_root=str(tmp_path))
+    up.save_last_upload(1, {'old'})
+    cache = tmp_path / '#SFTP.last'
+    before = cache.read_bytes()
+
+    def fail_replace(*args):
+        raise OSError('disk full')
+
+    monkeypatch.setattr('user.sftp.os.replace', fail_replace)
+    with pytest.raises(OSError):
+        up.save_last_upload(2, {'new'})
+    assert cache.read_bytes() == before
+    assert not list(tmp_path.glob('.#sftp-*'))
+
+
+def test_success_uses_start_time_for_cache(paramiko_stub, tmp_path, monkeypatch):
+    path = tmp_path / 'index.html'
+    path.write_text('data')
+    monkeypatch.setattr('user.sftp.time.time', lambda: 1000)
+    up = make_uploader(local_root=str(tmp_path))
+    up.run()
+    assert up.get_last_upload()[0] == 1000
+
+
+def test_progress_is_opt_in_and_does_not_log_password(paramiko_stub, tmp_path, caplog):
+    (tmp_path / 'index.html').write_text('data')
+    with caplog.at_level(logging.INFO):
+        make_uploader(local_root=str(tmp_path), log_progress=True).run()
+    assert 'uploading /remote/pub/index.html' in caplog.text
+    assert 'secret' not in caplog.text
+
+
+@pytest.mark.skipif(not hasattr(os, 'mkfifo'), reason='requires POSIX FIFO support')
+def test_fifo_rejected_without_opening(paramiko_stub, tmp_path):
+    os.mkfifo(tmp_path / 'pipe')
+    with pytest.raises(OSError, match='non-regular file'):
+        make_uploader(local_root=str(tmp_path)).run()

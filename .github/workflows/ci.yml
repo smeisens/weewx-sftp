@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.9", "3.11", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,14 +39,23 @@ jobs:
         run: pytest -q
 
   integration:
-    # Import the extension against a real WeeWX + paramiko, no stubs.
+    # Run separately from pytest so its in-memory Paramiko fake cannot leak in.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.9"
+            paramiko-version: "3.5.1"
+          - python-version: "3.14"
+            paramiko-version: "5.0.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: pip install weewx paramiko
+          python-version: ${{ matrix.python-version }}
+      - run: pip install weewx "paramiko==${{ matrix.paramiko-version }}"
       - name: import check
         run: |
           python - <<'PY'
@@ -58,3 +67,5 @@ jobs:
           assert isinstance(s.VERSION, str) and s.VERSION
           print("OK: weewx", weewx.__version__, "sftp", s.VERSION)
           PY
+      - name: Real SSH/SFTP transfer and timeout tests
+        run: python tests/integration_sftp.py
