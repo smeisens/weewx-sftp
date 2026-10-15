@@ -1,3 +1,11 @@
+0.9.0 14oct2026
+* bound SSH connection, SFTP negotiation and SFTP requests with configurable timeouts
+* fail incomplete transfers without advancing upload state or logging false success
+* atomically save destination-aware caches after successful transfers only
+* add optional known_hosts verification, identity controls and progress logging
+* use WeeWX runtime report configuration and key authentication in command-line uploads
+* see README migration warning: timeout defaults and legacy-cache full upload
+
 0.8 31aug2026
 * refactor SFTPUploader to use Paramiko instead of pysftp
 * improve connection error handling and retry cleanup
