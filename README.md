@@ -17,13 +17,13 @@ implemented by davies-barnard.
 
 ## Pre-requisites
 
-This extension requires the `pysftp` python module.  It can be installed using
+This extension requires the `paramiko` python module.  It can be installed using
 the system package manager such as `yum` or `apt`, or using `pip`.  Use the
 appropriate installation method for your operating system and configuration!
-For example, if you use `pip` then you can install it like this:
+For example, if you use `apt` then you can install it like this:
 
 ```
-sudo pip install pysftp
+sudo apt install python3-paramiko
 ```
 
 ## Installation
