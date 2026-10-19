@@ -1,7 +1,7 @@
 # weewx-sftp
 
-> Copyright 2016-2020 Matthew Wall,
-> Copyright 2026 Sigi Meisenbichler,
+> Copyright 2016-2020 Matthew Wall,  
+> Copyright 2026 Sigi Meisenbichler,  
 > Distributed under terms of the GPLv3
 
 Generator for weewx that uploads data using sftp.  Copy everything from a
