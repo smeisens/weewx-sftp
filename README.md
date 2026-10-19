@@ -1,6 +1,6 @@
 # weewx-sftp
 
-> Copyright 2016-2020 Matthew Wall, Distributed under terms of the GPLv3
+> Copyright 2016-2020 Matthew Wall, Copyright 2026 Sigi Meisenbichler, Distributed under terms of the GPLv3
 
 Generator for weewx that uploads data using sftp.  Copy everything from a
 designated local directory to a remote directory, using the sftp protocol.
@@ -10,7 +10,7 @@ in weewx, but using a different protocol.
 
 The sftp protocol is not the same as the ftps protocol!  The ftps protocol
 is supported by the standard FTP generator in weewx.  This generator uses sftp,
-which requires the pysftp module.
+which requires the paramiko module.
 
 Based on the FTP generator in weewx, with help from the SFTP generator
 implemented by davies-barnard.
