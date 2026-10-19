@@ -1,4 +1,5 @@
 # Copyright 2018 Matthew Wall
+# Copyright 2026 Sigi Meisenbichler
 # Distributed under the terms of GPLv3
 """
 Generator for weewx that uploads data using sftp.  Copy everything from a
@@ -9,13 +10,13 @@ in weewx, but using a different protocol.
 
 The sftp protocol is not the same as the ftps protocol!  The ftps protocol
 is supported by the standard FTP generator in weewx.  This generator uses sftp,
-which requires the pysftp module.
+which requires the paramiko module.
 
 Based on the FTP generator in weewx, with help from the SFTP generator
 implemented by davies-barnard.
 """
 
-# sftp.py - WeeWX SFTP Generator mit Paramiko (anstelle pysftp)
+# sftp.py - WeeWX SFTP Generator mit Paramiko (anstatt pysftp)
 
 import os
 import time
@@ -43,7 +44,7 @@ def logerr(msg, label=None):
     log.error(f"{label}: {msg}")
 
 
-VERSION = "0.7"
+VERSION = "0.8"
 
 
 class SFTPUploader(object):
