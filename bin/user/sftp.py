@@ -1,5 +1,5 @@
 # Copyright 2018 Matthew Wall
-# Copyright 2026 Sigi Meisenbichler
+# Copyright 2025 - 2026 Sigi Meisenbichler
 # Distributed under the terms of GPLv3
 """
 Generator for weewx that uploads data using sftp.  Copy everything from a
