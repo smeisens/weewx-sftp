@@ -14,8 +14,8 @@ class SFTPInstaller(ExtensionInstaller):
             version="0.8",
             name='sftp',
             description='Upload data using the sftp protocol',
-            author="Sigi Meisenbichler",
-            author_email="s.meisen@icloud.com",
+            author="Matthew Wall, Sigi Meisenbichler",
+            author_email="mwall@users.sourceforge.net, s.meisen@icloud.com",
             config={
                 'StdReport': {
                     'sftp': {
