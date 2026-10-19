@@ -1,5 +1,6 @@
 # installer for SFTPGenerator
 # Copyright 2018-2020 Matthew Wall
+# Copyright 2026 Sigi Meisenbichler
 # Distributed under the terms of the GNU Public License (GPLv3)
 
 from weecfg.extension import ExtensionInstaller
@@ -10,11 +11,11 @@ def loader():
 class SFTPInstaller(ExtensionInstaller):
     def __init__(self):
         super(SFTPInstaller, self).__init__(
-            version="0.7",
+            version="0.8",
             name='sftp',
             description='Upload data using the sftp protocol',
-            author="Matthew Wall",
-            author_email="mwall@users.sourceforge.net",
+            author="Sigi Meisenbichler",
+            author_email="s.meisen@icloud.com",
             config={
                 'StdReport': {
                     'sftp': {
