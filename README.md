@@ -31,7 +31,7 @@ sudo pip install pysftp
 1) Download the generator
 
 ```
-wget -O weewx-sftp.zip https://github.com/matthewwall/weewx-sftp/archive/master.zip
+wget -O weewx-sftp.zip https://github.com/smeisens/weewx-sftp/archive/master.zip
 ```
 
 2) Install the generator
