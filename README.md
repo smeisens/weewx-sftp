@@ -28,19 +28,13 @@ sudo pip install pysftp
 
 ## Installation
 
-1) Download the generator
+1) Download and Install the generator
 
 ```
-wget -O weewx-sftp.zip https://github.com/smeisens/weewx-sftp/archive/master.zip
+weectl extension install https://github.com/smeisens/weewx-sftp/archive/master.zip
 ```
 
-2) Install the generator
-
-```
-sudo wee_extension --install weewx-sftp.zip
-```
-
-3) Set the SFTP parameters in the weewx configuration file
+2) Set the SFTP parameters in the weewx configuration file
 
 ```
 [StdReport]
@@ -53,10 +47,10 @@ sudo wee_extension --install weewx-sftp.zip
         path = /weewx
 ```
 
-4) Re-start weewx
+3) Re-start weewx
 
 ```
-sudo /etc/init.d/weewx start
+sudo systemctl restart weewx
 ```
 
 ## Options
