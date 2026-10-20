@@ -1,3 +1,18 @@
+0.9 21oct2026
+* verify the server host key (known_hosts), reject unknown/changed keys
+* optional trust-on-first-use with accept_new_host_key
+* support Ed25519/ECDSA keys, not only RSA
+* read password and key passphrase from environment variables
+  (password_env, private_key_pass_env)
+* warn if paramiko < 3.4.0 (Terrapin, CVE-2023-48795)
+* connect/banner/auth/channel timeouts (option timeout)
+* store upload state as JSON instead of pickle, written atomically
+* do not advance the upload state after a failed connection, retry failed
+  files on the next run
+* do not follow symlinks outside of HTML_ROOT
+* abort instead of retrying every file when the connection is lost
+* skip VCS directories by name, use POSIX paths for the remote side
+
 0.8 18oct2026
 * update readme
 * replace pysftp with paramiko
