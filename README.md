@@ -30,6 +30,11 @@ implemented by davies-barnard.
   pip install paramiko
   ```
 
+  Use paramiko 3.4.0 or newer. Older releases are vulnerable to the Terrapin
+  attack (CVE-2023-48795); the generator logs a warning once per process when
+  it finds one. Distribution packages may carry a backported fix under an older
+  version number; in that case the warning can be ignored.
+
 ## Upgrading to 0.9.0 — compatibility warning
 
 Version **0.9.0 changes failure handling and upload-cache behavior**. Review

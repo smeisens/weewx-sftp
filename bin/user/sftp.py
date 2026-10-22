@@ -20,6 +20,7 @@ import math
 import os
 import pickle
 import posixpath
+import re
 import stat
 import tempfile
 import threading
@@ -40,11 +41,47 @@ def loginf(msg, label='sftp'):
     log.info("%s: %s" % (label, msg))
 
 
+def logwarn(msg, label='sftp'):
+    log.warning("%s: %s" % (label, msg))
+
+
 def logerr(msg, label='sftp'):
     log.error("%s: %s" % (label, msg))
 
 
 VERSION = "0.9.0"
+
+# paramiko 3.4.0 added "strict kex", the client-side fix for the Terrapin
+# prefix-truncation attack (CVE-2023-48795).
+MIN_SAFE_PARAMIKO = (3, 4, 0)
+_paramiko_version_checked = False
+
+
+def paramiko_version(module):
+    """Return the version of a paramiko module as a tuple of ints, or None."""
+    info = getattr(module, '__version_info__', None)
+    if info is not None:
+        try:
+            return tuple(int(x) for x in info[:3])
+        except (TypeError, ValueError):
+            pass
+    match = re.match(r'(\d+)\.(\d+)(?:\.(\d+))?', str(getattr(module, '__version__', '')))
+    if match is None:
+        return None
+    return tuple(int(x or 0) for x in match.groups())
+
+
+def check_paramiko_version(module):
+    """Warn once per process if paramiko is vulnerable to Terrapin."""
+    global _paramiko_version_checked
+    if _paramiko_version_checked:
+        return
+    _paramiko_version_checked = True
+    version = paramiko_version(module)
+    if version is not None and version < MIN_SAFE_PARAMIKO:
+        logwarn("paramiko %s is vulnerable to the Terrapin attack (CVE-2023-48795); "
+                "upgrade to %s or newer" % (getattr(module, '__version__', version),
+                                            '.'.join(str(x) for x in MIN_SAFE_PARAMIKO)))
 
 
 class SFTPUploader(object):
@@ -79,6 +116,7 @@ class SFTPUploader(object):
 
     def run(self):
         import paramiko
+        check_paramiko_version(paramiko)
         if not os.path.isdir(self.local_root):
             raise OSError("local report directory does not exist: %s" % self.local_root)
         started = time.time()
