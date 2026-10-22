@@ -49,6 +49,10 @@ these changes before upgrading from 0.8 or earlier:
   Changing the server, port, username, or destination path also triggers a full
   upload. Allow for the extra initial transfer. Existing caches are replaced
   atomically only after a successful run.
+- The upload cache (`#<report>.last` in the report directory) is stored as
+  JSON. Pickle caches from earlier versions, including 0.9.0, are never
+  loaded, because unpickling a file from the report directory could execute
+  code; the first run after upgrading therefore uploads the full report.
 - Non-regular files, such as FIFOs, fail the report instead of potentially
   blocking it indefinitely. Symlinks to regular files remain supported.
 - The command-line uploader now reads the actual WeeWX configuration and skin,

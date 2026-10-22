@@ -15,10 +15,11 @@ Based on the FTP generator in weewx, with help from the SFTP generator
 implemented by davies-barnard.
 """
 
+import json
 import logging
 import math
+import numbers
 import os
-import pickle
 import posixpath
 import stat
 import tempfile
@@ -234,39 +235,62 @@ class SFTPUploader(object):
     def _target(self):
         return (self.server, int(self.port), self.user, self.remote_root)
 
+    CACHE_FORMAT = 1
+
     def get_last_upload(self):
-        """read the time and members of the last upload from local root"""
+        """read the time and members of the last upload from local root
+
+        The cache is JSON.  Caches written by older versions are pickles; they
+        are never unpickled, because loading a pickle can execute code and the
+        report directory is writable by skins and other generators.  Such a
+        cache is kept until the next successful upload replaces it.
+        """
         tsfile = os.path.join(self.local_root, "#%s.last" % self.name)
         try:
             with open(tsfile, "rb") as f:
-                timestamp = pickle.load(f)
-                fileset = pickle.load(f)
-                try:
-                    target = pickle.load(f)
-                except EOFError:
-                    target = None
-            if target != self._target():
-                loginf("upload destination changed or cache is legacy; uploading all files",
-                       self.name)
-                return (0, set())
-        except (OSError, EOFError, pickle.PickleError):
-            timestamp = 0
-            fileset = set()
+                raw = f.read()
+        except OSError:
+            return (0, set())
+        if raw.startswith(b'\x80'):  # pickle protocol 2 or later
+            loginf("upload cache is legacy; uploading all files", self.name)
+            return (0, set())
+        try:
+            data = json.loads(raw.decode('utf-8'))
+            timestamp = data['timestamp']
+            files = data['files']
+            target = data['target']
+            if (data['format'] != self.CACHE_FORMAT
+                    or not isinstance(timestamp, numbers.Real)
+                    or isinstance(timestamp, bool)
+                    or not isinstance(files, list)
+                    or not all(isinstance(x, str) for x in files)
+                    or not isinstance(target, list)):
+                raise ValueError("unexpected cache contents")
+        except (ValueError, KeyError, TypeError) as e:
+            loginf("discarding unreadable upload cache %s: %s" % (tsfile, e), self.name)
             try:
                 os.remove(tsfile)
             except OSError:
                 pass
-        return (timestamp, fileset)
+            return (0, set())
+        if tuple(target) != self._target():
+            loginf("upload destination changed; uploading all files", self.name)
+            return (0, set())
+        return (timestamp, set(files))
 
     def save_last_upload(self, timestamp, fileset):
         """save the time and members of the last upload in the local root"""
         tsfile = os.path.join(self.local_root, "#%s.last" % self.name)
+        data = {
+            'format': self.CACHE_FORMAT,
+            'timestamp': timestamp,
+            'files': sorted(fileset),
+            'target': list(self._target()),
+        }
         fd, staged = tempfile.mkstemp(prefix=".#sftp-", dir=self.local_root)
         try:
-            with os.fdopen(fd, "wb") as f:
-                pickle.dump(timestamp, f)
-                pickle.dump(fileset, f)
-                pickle.dump(self._target(), f)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=1)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(staged, tsfile)
