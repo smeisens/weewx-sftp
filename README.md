@@ -55,7 +55,9 @@ these changes before upgrading from 0.8 or earlier:
   upload. Allow for the extra initial transfer. Existing caches are replaced
   atomically only after a successful run.
 - Non-regular files, such as FIFOs, fail the report instead of potentially
-  blocking it indefinitely. Symlinks to regular files remain supported.
+  blocking it indefinitely. Symlinks to regular files remain supported; links
+  whose target lies outside the report directory are skipped unless
+  `allow_external_symlinks` is set.
 - The command-line uploader now reads the actual WeeWX configuration and skin,
   including inherited paths and private-key options, and returns nonzero on
   failure. It no longer substitutes example credentials or paths for missing
@@ -118,6 +120,7 @@ configure `known_hosts` below to enable it.
 | `known_hosts` | Optional path to a trusted OpenSSH known-hosts file. When set, only this file is trusted and unknown or changed keys are rejected. `~` is expanded. |
 | `allow_agent` | Permit SSH-agent authentication. Default is `true`, preserving existing behavior. |
 | `look_for_keys` | Look for default SSH keys. Default is `true`, preserving existing behavior. |
+| `allow_external_symlinks` | Upload files whose symlink target lies outside the local report directory. Default is `false`: such links are skipped and logged, so a stray link cannot publish files like `weewx.conf`. Symlinks within the report directory are always uploaded. |
 | `log_progress` | Log each file before and after upload at INFO level. Default is `false`; connection/session phases are always logged. Useful for locating a stalled transfer. |
 
 The local directory comes from the standard WeeWX report options `WEEWX_ROOT`

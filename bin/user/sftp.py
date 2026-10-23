@@ -90,7 +90,8 @@ class SFTPUploader(object):
                  private_key=None, private_key_pass=None,
                  port=22, name='SFTP', max_tries=3, debug=0,
                  timeout=30, known_hosts=None, allow_agent=True,
-                 look_for_keys=True, log_progress=False):
+                 look_for_keys=True, log_progress=False,
+                 allow_external_symlinks=False):
         import paramiko  # noqa: F401  -- fail fast if the dependency is missing
         self.server = server
         self.user = user
@@ -109,6 +110,7 @@ class SFTPUploader(object):
         self.allow_agent = to_bool(allow_agent)
         self.look_for_keys = to_bool(look_for_keys)
         self.log_progress = to_bool(log_progress)
+        self.allow_external_symlinks = to_bool(allow_external_symlinks)
         self.debug = debug
         logdbg("local_root=%s" % self.local_root)
         logdbg("remote_root=%s" % self.remote_root)
@@ -183,6 +185,8 @@ class SFTPUploader(object):
             def walk_error(error):
                 raise error
 
+            real_root = os.path.realpath(self.local_root)
+
             for dirpath, dirs, filenames in os.walk(self.local_root, onerror=walk_error):
                 dirs[:] = [d for d in dirs if not self._skip_dir(d)]
                 # strip out the common local root directory
@@ -197,6 +201,10 @@ class SFTPUploader(object):
                 # iterate over all members of the local directory
                 for filename in filenames:
                     full_local_path = os.path.join(dirpath, filename)
+                    if self._points_outside(real_root, full_local_path):
+                        loginf("skipping %s: symlink target is outside %s" %
+                               (full_local_path, self.local_root), self.name)
+                        continue
                     # see if this file can be skipped
                     if self._skip_file(timestamp, fileset, full_local_path):
                         continue
@@ -335,6 +343,20 @@ class SFTPUploader(object):
         else:
             raise OSError("failed to create remote directory %s" % remote_dir_path)
 
+    def _points_outside(self, real_root, full_local_path):
+        """True if a symlink resolves to a path outside the local root.
+
+        Without this a link such as ``public_html/x -> /etc/weewx/weewx.conf``
+        would publish the target's contents on the web server.
+        """
+        if self.allow_external_symlinks:
+            return False
+        real_path = os.path.realpath(full_local_path)
+        try:
+            return os.path.commonpath([real_root, real_path]) != real_root
+        except ValueError:  # different drives on Windows
+            return True
+
     def _skip_dir(self, local_dir):
         return any(x in os.path.normpath(local_dir).split(os.sep) for x in ('.svn', 'CVS', '.git'))
 
@@ -414,7 +436,8 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
                 known_hosts=self.skin_dict.get('known_hosts'),
                 allow_agent=self.skin_dict.get('allow_agent', True),
                 look_for_keys=self.skin_dict.get('look_for_keys', True),
-                log_progress=self.skin_dict.get('log_progress', False))
+                log_progress=self.skin_dict.get('log_progress', False),
+                allow_external_symlinks=self.skin_dict.get('allow_external_symlinks', False))
         except KeyError as e:
             loginf("upload not possible: missing parameter %s" % e,
                    "sftpgenerator")
