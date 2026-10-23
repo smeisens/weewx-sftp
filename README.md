@@ -103,6 +103,8 @@ configure `known_hosts` below to enable it.
 | `password` | Remote password. If it contains a comma or space, wrap it in double quotes. Omit when using key authentication. |
 | `private_key` | Path to a private key file for key-based authentication. |
 | `private_key_pass` | Passphrase for `private_key`, if it has one. |
+| `password_env` | Name of an environment variable holding the password, instead of `password`. Setting both is an error. |
+| `private_key_pass_env` | Name of an environment variable holding the key passphrase, instead of `private_key_pass`. Setting both is an error. |
 | `server` | Hostname or IP address of the remote host. Required. |
 | `port` | Port on the remote host. Default is `22`. |
 | `path` | Destination directory on the remote host. Required. |
@@ -140,6 +142,35 @@ obtained through an independently verified channel:
 Omit `password` when using key-only authentication. Ensure the WeeWX process
 can read the private key and known-hosts file. For a nonstandard SSH port, the
 known-hosts entry uses OpenSSH's `[host.example.com]:PORT` hostname notation.
+
+### Keeping secrets out of weewx.conf
+
+`weewx.conf` is often readable by more accounts than the WeeWX service, or ends
+up in backups and support requests. Instead of `password` or
+`private_key_pass`, you can name an environment variable with `password_env`
+or `private_key_pass_env`:
+
+```ini
+[StdReport]
+    [[SFTP]]
+        server = host.example.com
+        user = publisher
+        password_env = WEEWX_SFTP_PASSWORD
+        path = /reports
+```
+
+With systemd, provide the variable through a drop-in
+(`sudo systemctl edit weewx`) that reads a root-only file:
+
+```ini
+[Service]
+EnvironmentFile=/etc/weewx/sftp.env
+```
+
+where `/etc/weewx/sftp.env` (mode `0600`) contains
+`WEEWX_SFTP_PASSWORD=...`. If the named variable is unset or empty, the report
+fails with a configuration error that names the variable but not its value.
+For the command-line uploader, export the variable in the calling shell.
 
 To run one report directly with its effective skin settings:
 

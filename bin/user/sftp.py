@@ -323,6 +323,25 @@ class SFTPUploader(object):
         return flag
 
 
+def get_secret(skin_dict, option):
+    """Return a secret option, either inline or from an environment variable.
+
+    ``<option>_env`` names an environment variable that holds the value, so
+    the secret does not have to be stored in weewx.conf.  Setting both forms
+    is ambiguous and rejected, as is a named variable that is unset or empty.
+    """
+    env_name = skin_dict.get('%s_env' % option)
+    if not env_name:
+        return skin_dict.get(option)
+    if skin_dict.get(option) is not None:
+        raise ValueError("set either %s or %s_env, not both" % (option, option))
+    value = os.environ.get(env_name)
+    if not value:
+        raise ValueError("environment variable %s (from %s_env) is not set or empty"
+                         % (env_name, option))
+    return value
+
+
 class SFTPGenerator(weewx.reportengine.ReportGenerator):
 
     def run(self):
@@ -344,9 +363,9 @@ class SFTPGenerator(weewx.reportengine.ReportGenerator):
             uploader = SFTPUploader(
                 server=self.skin_dict['server'],
                 user=self.skin_dict['user'],
-                password=self.skin_dict.get('password'),
+                password=get_secret(self.skin_dict, 'password'),
                 private_key=self.skin_dict.get('private_key'),
-                private_key_pass=self.skin_dict.get('private_key_pass'),
+                private_key_pass=get_secret(self.skin_dict, 'private_key_pass'),
                 local_root=local_root,
                 remote_root=self.skin_dict['path'],
                 port=int(self.skin_dict.get('port', 22)),
