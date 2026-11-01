@@ -51,24 +51,45 @@ def logerr(msg, label='sftp'):
 
 VERSION = "0.9.0"
 
-# paramiko 3.4.0 added "strict kex", the client-side fix for the Terrapin
-# prefix-truncation attack (CVE-2023-48795).
-MIN_SAFE_PARAMIKO = (3, 4, 0)
+# Terrapin (CVE-2023-48795) needs encrypt-then-MAC or ChaCha20-Poly1305.
+# paramiko added ETM MACs in 2.5.0 (it never implemented ChaCha20-Poly1305)
+# and the client-side mitigation, "strict kex", in 3.4.0.
+TERRAPIN_FIRST_AFFECTED = (2, 5, 0)
+TERRAPIN_FIRST_FIXED = (3, 4, 0)
 _paramiko_version_checked = False
+
+_VERSION_RE = re.compile(r'^\s*v?(\d+)\.(\d+)(?:\.(\d+))?(.*)$')
+_PRERELEASE_RE = re.compile(r'^[-_.]?(a|alpha|b|beta|c|rc|pre|preview|dev)\d*', re.IGNORECASE)
 
 
 def paramiko_version(module):
-    """Return the version of a paramiko module as a tuple of ints, or None."""
+    """Return the version of a paramiko module as (major, minor, patch, final).
+
+    ``final`` is 0 for a pre-release (``3.4.0rc1``, ``3.4.0.dev1``) and 1
+    otherwise, so a pre-release sorts below the release it precedes and is
+    not mistaken for a patched version.  Post-releases and local versions
+    (``3.4.0.post1``, ``3.4.0+deb12u1``) count as final.  Returns None if the
+    version cannot be determined.
+    """
+    match = _VERSION_RE.match(str(getattr(module, '__version__', '')))
+    if match is not None:
+        major, minor, patch, suffix = match.groups()
+        final = 0 if _PRERELEASE_RE.match(suffix.strip()) else 1
+        return (int(major), int(minor), int(patch or 0), final)
     info = getattr(module, '__version_info__', None)
-    if info is not None:
-        try:
-            return tuple(int(x) for x in info[:3])
-        except (TypeError, ValueError):
-            pass
-    match = re.match(r'(\d+)\.(\d+)(?:\.(\d+))?', str(getattr(module, '__version__', '')))
-    if match is None:
+    try:
+        parts = tuple(int(x) for x in info[:3])
+    except (TypeError, ValueError):
         return None
-    return tuple(int(x or 0) for x in match.groups())
+    if len(parts) < 2:
+        return None
+    return parts + (0,) * (3 - len(parts)) + (1,)
+
+
+def is_terrapin_vulnerable(version):
+    """True for paramiko >= 2.5.0 (pre-releases included) and < 3.4.0 final."""
+    return (version is not None
+            and TERRAPIN_FIRST_AFFECTED + (0,) <= version < TERRAPIN_FIRST_FIXED + (1,))
 
 
 def check_paramiko_version(module):
@@ -78,10 +99,11 @@ def check_paramiko_version(module):
         return
     _paramiko_version_checked = True
     version = paramiko_version(module)
-    if version is not None and version < MIN_SAFE_PARAMIKO:
+    if is_terrapin_vulnerable(version):
+        shown = getattr(module, '__version__', None) or '.'.join(str(x) for x in version[:3])
         logwarn("paramiko %s is vulnerable to the Terrapin attack (CVE-2023-48795); "
-                "upgrade to %s or newer" % (getattr(module, '__version__', version),
-                                            '.'.join(str(x) for x in MIN_SAFE_PARAMIKO)))
+                "upgrade to %s or newer" % (shown,
+                                            '.'.join(str(x) for x in TERRAPIN_FIRST_FIXED)))
 
 
 class SFTPUploader(object):
